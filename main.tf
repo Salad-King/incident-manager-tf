@@ -87,6 +87,12 @@ resource "google_service_account" "ci" {
   display_name = "Incident Commander GitHub Actions CI"
 }
 
+resource "google_storage_bucket_iam_member" "ci_terraform_state" {
+  bucket = "incident-commander-tf-state"
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.ci.email}"
+}
+
 # Push images to Artifact Registry
 resource "google_artifact_registry_repository_iam_member" "ci_ar_push" {
   repository = google_artifact_registry_repository.images.name
