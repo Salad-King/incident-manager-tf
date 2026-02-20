@@ -6,3 +6,4 @@
 !example.tfvars
 override.tf
 crash.log
+tfplan

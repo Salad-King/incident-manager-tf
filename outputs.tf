@@ -4,7 +4,7 @@ output "artifact_registry_url" {
 }
 
 output "gcs_artifacts_dir" {
-  description = "Full GCS path for RCA report uploads"
+  description = "Full GCS path for RCA report uploads — use as ARTIFACTS_GCS_DIR GitHub secret"
   value       = "gs://${google_storage_bucket.artifacts.name}/${var.gcs_artifacts_prefix}"
 }
 
@@ -14,21 +14,11 @@ output "cloud_run_job_name" {
 }
 
 output "runner_service_account" {
-  description = "Service account email used by the Cloud Run Job"
+  description = "Service account email used by the Cloud Run Job at runtime"
   value       = google_service_account.runner.email
 }
 
-output "wif_provider" {
-  description = "Full WIF provider resource name — use as WIF_PROVIDER GitHub secret"
-  value       = google_iam_workload_identity_pool_provider.github.name
-}
-
-output "wif_service_account" {
-  description = "Service account email for WIF — use as WIF_SERVICE_ACCOUNT and CLOUD_RUN_SA GitHub secrets"
-  value       = google_service_account.runner.email
-}
-
-output "artifacts_gcs_dir" {
-  description = "ARTIFACTS_GCS_DIR value — use as ARTIFACTS_GCS_DIR GitHub secret"
-  value       = "gs://${google_storage_bucket.artifacts.name}/${var.gcs_artifacts_prefix}"
+output "ci_service_account" {
+  description = "CI service account email — create and download a key for GCP_SA_KEY GitHub secret"
+  value       = google_service_account.ci.email
 }

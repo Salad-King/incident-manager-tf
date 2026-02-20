@@ -35,27 +35,9 @@ variable "cloud_run_job_name" {
 }
 
 variable "service_account_name" {
-  description = "Service account name for the Cloud Run Job"
+  description = "Service account name for the Cloud Run Job runtime"
   type        = string
   default     = "incident-commander-runner"
-}
-
-variable "github_repo" {
-  description = "GitHub repository in org/repo format for Workload Identity Federation"
-  type        = string
-  default     = "Salad-King/incident-manager"
-}
-
-variable "wif_pool_id" {
-  description = "Workload Identity Pool ID"
-  type        = string
-  default     = "github-pool"
-}
-
-variable "wif_provider_id" {
-  description = "Workload Identity Provider ID"
-  type        = string
-  default     = "github-provider"
 }
 
 variable "container_image" {

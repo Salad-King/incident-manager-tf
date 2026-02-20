@@ -27,7 +27,6 @@ resource "google_project_service" "apis" {
     "artifactregistry.googleapis.com",
     "secretmanager.googleapis.com",
     "iam.googleapis.com",
-    "iamcredentials.googleapis.com",
     "storage.googleapis.com",
   ])
 
@@ -62,32 +61,52 @@ resource "google_storage_bucket" "artifacts" {
   depends_on = [google_project_service.apis]
 }
 
-# ─── Service account ─────────────────────────────────────────────────────────
+# ─── Service account: Cloud Run Job runtime ──────────────────────────────────
 
 resource "google_service_account" "runner" {
   account_id   = var.service_account_name
   display_name = "Incident Commander Cloud Run Runner"
 }
 
-# Allow SA to read the OpenRouter secret
 resource "google_secret_manager_secret_iam_member" "runner_secret_access" {
   secret_id = google_secret_manager_secret.openrouter_key.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.runner.email}"
 }
 
-# Allow SA to write RCA reports to GCS
 resource "google_storage_bucket_iam_member" "runner_gcs_write" {
   bucket = google_storage_bucket.artifacts.name
   role   = "roles/storage.objectCreator"
   member = "serviceAccount:${google_service_account.runner.email}"
 }
 
-# Allow SA to act as itself (required for Cloud Run Jobs)
-resource "google_service_account_iam_member" "runner_act_as" {
+# ─── Service account: GitHub Actions CI ──────────────────────────────────────
+
+resource "google_service_account" "ci" {
+  account_id   = "incident-commander-ci"
+  display_name = "Incident Commander GitHub Actions CI"
+}
+
+# Push images to Artifact Registry
+resource "google_artifact_registry_repository_iam_member" "ci_ar_push" {
+  repository = google_artifact_registry_repository.images.name
+  location   = var.region
+  role       = "roles/artifactregistry.writer"
+  member     = "serviceAccount:${google_service_account.ci.email}"
+}
+
+# Create / update / run Cloud Run Jobs
+resource "google_project_iam_member" "ci_run_admin" {
+  project = var.project_id
+  role    = "roles/run.admin"
+  member  = "serviceAccount:${google_service_account.ci.email}"
+}
+
+# Impersonate the runner SA when deploying the job
+resource "google_service_account_iam_member" "ci_act_as_runner" {
   service_account_id = google_service_account.runner.name
   role               = "roles/iam.serviceAccountUser"
-  member             = "serviceAccount:${google_service_account.runner.email}"
+  member             = "serviceAccount:${google_service_account.ci.email}"
 }
 
 # ─── Secret Manager ──────────────────────────────────────────────────────────
@@ -102,56 +121,58 @@ resource "google_secret_manager_secret" "openrouter_key" {
   depends_on = [google_project_service.apis]
 }
 
-# NOTE: The secret value is not managed by Terraform.
-# Set it once manually:
-#   echo -n "sk-or-..." | gcloud secrets versions add OPENROUTER_API_KEY --data-file=- --project cloud-gaming-443109
+# NOTE: Secret value is NOT managed by Terraform. Set it once:
+#   echo -n "sk-or-..." | gcloud secrets versions add OPENROUTER_API_KEY \
+#     --data-file=- --project cloud-gaming-443109
 
-# ─── Workload Identity Federation ────────────────────────────────────────────
+# ─── Cloud Run Job ───────────────────────────────────────────────────────────
 
-resource "google_iam_workload_identity_pool" "github" {
-  workload_identity_pool_id = var.wif_pool_id
-  display_name              = "GitHub Actions Pool"
-  disabled                  = false
+resource "google_cloud_run_v2_job" "incident_commander" {
+  name     = var.cloud_run_job_name
+  location = var.region
 
-  depends_on = [google_project_service.apis]
-}
+  template {
+    template {
+      service_account = google_service_account.runner.email
 
-resource "google_iam_workload_identity_pool_provider" "github" {
-  workload_identity_pool_id          = google_iam_workload_identity_pool.github.workload_identity_pool_id
-  workload_identity_pool_provider_id = var.wif_provider_id
-  display_name                       = "GitHub Actions OIDC"
+      # Dedicated Gen2 instance — no CPU throttling, no resource sharing
+      execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
 
-  attribute_mapping = {
-    "google.subject"       = "assertion.sub"
-    "attribute.repository" = "assertion.repository"
-    "attribute.ref"        = "assertion.ref"
+      containers {
+        image = var.container_image
+
+        resources {
+          limits = {
+            cpu    = var.job_cpu
+            memory = var.job_memory
+          }
+        }
+
+        env {
+          name  = "ARTIFACTS_GCS_DIR"
+          value = "gs://${google_storage_bucket.artifacts.name}/${var.gcs_artifacts_prefix}"
+        }
+
+        env {
+          name = "OPENROUTER_API_KEY"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.openrouter_key.secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
+
+      timeout     = "${var.job_timeout_seconds}s"
+      max_retries = 0
+    }
   }
 
-  attribute_condition = "attribute.repository == \"${var.github_repo}\""
-
-  oidc {
-    issuer_uri = "https://token.actions.githubusercontent.com"
-  }
-}
-
-# Allow GitHub Actions (main branch pushes) to impersonate the runner SA
-resource "google_service_account_iam_member" "wif_binding" {
-  service_account_id = google_service_account.runner.name
-  role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${var.github_repo}"
-}
-
-# Allow GitHub Actions SA to push images to Artifact Registry
-resource "google_artifact_registry_repository_iam_member" "github_push" {
-  repository = google_artifact_registry_repository.images.name
-  location   = var.region
-  role       = "roles/artifactregistry.writer"
-  member     = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${var.github_repo}"
-}
-
-# Allow GitHub Actions SA to create/update/run Cloud Run Jobs
-resource "google_project_iam_member" "github_run_admin" {
-  project = var.project_id
-  role    = "roles/run.admin"
-  member  = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${var.github_repo}"
+  depends_on = [
+    google_project_service.apis,
+    google_artifact_registry_repository.images,
+    google_service_account.runner,
+    google_secret_manager_secret.openrouter_key,
+  ]
 }
